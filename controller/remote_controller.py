@@ -1,8 +1,8 @@
 from ryu.base import app_manager
 from ryu.controller import ofp_event
-from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
+from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER  #接收 SwitchFeatures 訊息和一般狀態
 from ryu.controller.handler import set_ev_cls
-from ryu.ofproto import ofproto_v1_3
+from ryu.ofproto import ofproto_v1_3 #openflow 协议版本
 from ryu.lib.packet import packet, arp, ethernet, ipv4, ipv6, ether_types, icmp
 from ryu.lib import hub
 
@@ -63,10 +63,11 @@ url = '/simpleswitch/params/{obj}'
 '''
 
 
-class ControllerMain(simple_switch_13.SimpleSwitch13):
-    OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
+class ControllerMain(simple_switch_13.SimpleSwitch13):#继承ryuapp
+    OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION] #制定opf的
     _CONTEXTS = {'wsgi': WSGIApplication}
 
+    #初始化各类参数用
     def __init__(self, *args, **kwargs):
         super(ControllerMain, self).__init__(*args, **kwargs)
         wsgi = kwargs['wsgi']
@@ -135,21 +136,15 @@ class ControllerMain(simple_switch_13.SimpleSwitch13):
         self.iteration = 0
         # stop flag
         self.stop_flag = False
-
         # starting with random initialisation or SPF
         self.bias = Config.bias
-
         # if direct state change or per flow
         self.action_mode = Config.action_mode
-
         # last state change
         self.last_state_change = time.time()
-
         self.last_action = time.time()
-
         # saving for SPF
         self.latency_dict_SPF = {}
-
         self.parent_conn, self.child_conn = Pipe()
         # starting learning process
         p = Process(target=learning_module.learning_module, args=[self.child_conn])
@@ -157,14 +152,24 @@ class ControllerMain(simple_switch_13.SimpleSwitch13):
         # p.join()
         hub.spawn(self.checking_updates)
 
+    # set_ev_cls 則指定事件類別得以接受訊息和交換器狀態作為參數。
+    #   接受SwitchFeatures信息
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
         datapath = ev.msg.datapath
+        #ev.msg是用來儲存對應事件的OpenFlow訊息類別實體。在 這 個 例 子 中 則 是
+        #ryu.ofproto.ofproto_v1_3_parser.OFPSwitchFeatures 。
+        # Datapath類別是用來處理OpenFlow交換器重要的訊息，例如執行與交換器的通訊和觸發接收訊息相關的事件。
         ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
+        #msg.datapath 這 個 訊 息 是 用 來 儲 存 OpenFlow 交 換 器 的
+        #ryu.controller.controller.Datapath 類別所對應的實體。
+        parser = datapath.ofproto_parser #从数据路径对象中提取出parser，它是OpenFlow协议解析器的实现。解析器用于构建和解析OpenFlow消息。
         # register datapaths
         dpid = datapath.id
         # install the table-miss flow entry.
+        # Table-miss Flow Entry 的優先權為 0 即最低的優先權，而且此 Entry 可以 match 所有的封包。
+        # 這個 Entry 的 Instruction 通常指定為 output action ，並且輸出的連接埠將指向 Controller。因
+        # 此當封包沒有 match 任何一個普通 Flow Entry 時，則觸發 Packet-In。
         match = parser.OFPMatch()
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
                                           ofproto.OFPCML_NO_BUFFER)]
@@ -195,22 +200,29 @@ class ControllerMain(simple_switch_13.SimpleSwitch13):
         Updates latency Dictionary and checks of actions have been retrieved
         """
         i = 0
+        #等待延迟测量开始，隔一秒检查一次是否开始
         while not self.latency_measurement_flag:
             self.logger.info("Waiting for latency measurement")
             hub.sleep(1)
         hub.sleep(5)
+        #进入新的时间循环，主要是与训练学习模块进行交互
         while True:
             # check if action in pipe
             if self.parent_conn.poll():
                 action = self.parent_conn.recv()
+                print("###打印学习模块发过来的数据{}\n".format(action));
+                print("###数据结束")
+                # 路由行为改变
                 if len(action) > 0:
                     # one flow change
+                    #如果值有一条流表改变
                     if self.action_mode.value == ActionMode.ONE_FLOW.value:
                         if "_" in action[0]:
                             action_id_string = action[0]
                             new_path = action[1]
                             self.reroute(action_id_string, new_path)
                     # action changes for direct state change
+                    # 多条流表改变
                     elif self.action_mode.value == ActionMode.DIRECT_CHANGE.value:
                         if type(action) == dict:
                             for change in action:
@@ -219,15 +231,19 @@ class ControllerMain(simple_switch_13.SimpleSwitch13):
                                 self.reroute(str(flow_id), path)
                                 hub.sleep(0.05)
                     # so the measurmeents are reliable
+                    # 更新状态更改的时间
                     self.last_state_change = time.time() + (Config.delay_reward * interval_communication_processes) - 1
                     self.last_action = time.time()
+            #更新进的延迟字典
             self.latency_dict = functions.convert_data_map_to_dict(self.data_map, 'latencyRTT')
             # check if latency measurements are sufficient
+            # 检查延迟量测试是否足够
             if i > 0:
                 # checking if all measurements are sufficient
                 lat_measurements_flag = functions.check_new_measurement(self.last_state_change,
                                                                         self.last_arrived_package)
                 # have to reset
+                # 重置路由路径
                 if self.iteration_flag or (Config.split_up_load_levels_flag and self.reset_flag):
                     print("xxxxxxxxxxxxxxx!Resetting!xxxxxxxxxxxxxxxxxxxxxxxxxx")
                     for flow_id in self.chosen_path_per_flow:
@@ -241,6 +257,7 @@ class ControllerMain(simple_switch_13.SimpleSwitch13):
                                 print("Key {} not found".format(dst_ip))
                             self.del_flow_specific_switch(switch, src_ip, dst_ip)
                     self.already_routed_ip.clear()
+                #发送数据到学习模块
                 if lat_measurements_flag or self.iteration_flag or self.reset_flag:
                     sending_dict = {'currentCombination': self.chosen_path_per_flow,
                                     'paths_per_flow': self.paths_per_flows,
@@ -278,11 +295,15 @@ class ControllerMain(simple_switch_13.SimpleSwitch13):
         # construct flow_mod message and send it.
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,
                                              actions)]
+        print(inst)
         mod = parser.OFPFlowMod(datapath=datapath,
                                 flags=ofproto.OFPFC_ADD,
                                 priority=priority,
                                 match=match, instructions=inst)
         datapath.send_msg(mod)
+        #Flow Mod 訊 息 的 類 別 為 OFPFlowMod 。 使 用 OFPFlowMod 所 產 生 的 實 體 透 過
+        #Datap-ath.send_msg() 方法來發送訊息給 OpenFlow 交換器。
+
 
     def mod_flow(self, datapath, priority, match, actions):
         """
@@ -317,14 +338,18 @@ class ControllerMain(simple_switch_13.SimpleSwitch13):
                                 match=match)
         datapath.send_msg(mod)
 
+    #在 Packet-In 訊息的狀態下的事件名稱為 EventOFPPacketIn 一般状态
+    # 為了接收處理未知目的地的封包，需要 Packet-In 事件管理。
+    #上面的时间中产生了table-miss flow，触发该方法寻找目的地址的mac
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
-        timestamp_recieve = time.time()
+        timestamp_recieve = time.time()#记录时间戳
         msg = ev.msg
         datapath = msg.datapath
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         # get Datapath ID to identify OpenFlow switches.
+
         dpid = datapath.id
         self.mac_to_port.setdefault(dpid, {})
         # analyse the received packets using the packet library.
@@ -485,7 +510,7 @@ class ControllerMain(simple_switch_13.SimpleSwitch13):
                                              ofp.OFPP_ANY, ofp.OFPG_ANY, 0, 0, match)
         self.rtt_stats_sent[datapath.id] = time.time()
         datapath.send_msg(req)
-
+    # 返回opf接口的状态，一般状态
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
     def port_stats_reply_handler(self, ev):
         current_time = time.time()
@@ -533,6 +558,7 @@ class ControllerMain(simple_switch_13.SimpleSwitch13):
                             self.bandwith_port_dict[dpid_rec][port_no] = bw
 
     # for getting flow stats
+    # 返回opf接口的状态，一般状态
     @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
     def flow_stats_reply_handler(self, ev):
         dpid_rec = ev.msg.datapath.id
